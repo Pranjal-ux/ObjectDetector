@@ -11,7 +11,7 @@ import numpy as np
 from ultralytics import YOLO
 
 from config import AppConfig
-from utils import FPSCalculator, FrameAnnotator, save_screenshot, parse_source
+from .utils import FPSCalculator, FrameAnnotator, save_screenshot, parse_source
 
 
 class ObjectDetector:
