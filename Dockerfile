@@ -1,4 +1,3 @@
-# Hugging Face Spaces Deployment Dockerfile for Vizo Backend
 FROM python:3.11-slim
 
 # Install system dependencies for OpenCV
@@ -8,30 +7,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxrender1 \
     libxext6 \
     libgomp1 \
-    libgl1-mesa-glx \
+    libgl1 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install Python dependencies first (layer cache)
+# Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy backend source code
+# Copy backend
 COPY config.py .
-COPY utils.py .
-COPY detector.py .
-COPY server.py .
+COPY backend/ backend/
+
+# Copy YOLO model
+COPY yolo26n.pt .
 
 # Create screenshots directory
 RUN mkdir -p screenshots
 
-# Pre-download YOLO26 model weights on build (bake into image)
-RUN python -c "from ultralytics import YOLO; YOLO('yolo26n.pt')" 2>/dev/null || \
-    python -c "from ultralytics import YOLO; YOLO('yolov8n.pt')" || true
+# Render uses port 10000 by default
+EXPOSE 10000
 
-# HuggingFace Spaces runs on port 7860
-EXPOSE 7860
-
-CMD ["python", "-m", "uvicorn", "server:app", "--host", "0.0.0.0", "--port", "7860"]
+CMD ["sh", "-c", "uvicorn backend.server:app --host 0.0.0.0 --port ${PORT:-10000}"]

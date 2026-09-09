@@ -1,12 +1,15 @@
-frontend/dist
-frontend/node_modules
 __pycache__/
 *.pyc
-*.pyo
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Environment files
+.env
 .env.local
-screenshots/
-*.jpg
-*.jpeg
-*.png
-.DS_Store
-Thumbs.db
+frontend/.env
+
+# Python virtual environment
+venv/
+.venv/
