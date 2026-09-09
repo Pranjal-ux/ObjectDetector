@@ -38,6 +38,10 @@ class AppConfig:
     screenshot_dir: str = "screenshots"
     show_fps: bool = True
     
+    # Web Server Settings
+    web_host: str = "0.0.0.0"
+    web_port: int = 8000
+    
     def validate(self) -> None:
         """Validate configuration settings."""
         if not (0.0 <= self.conf_threshold <= 1.0):
@@ -51,3 +55,23 @@ class AppConfig:
         
         # Ensure screenshot directory exists
         os.makedirs(self.screenshot_dir, exist_ok=True)
+
+    def to_dict(self) -> dict:
+        """Serialize configuration into a JSON-compatible dictionary."""
+        return {
+            "model_path": self.model_path,
+            "conf_threshold": self.conf_threshold,
+            "iou_threshold": self.iou_threshold,
+            "imgsz": self.imgsz,
+            "device": self.device,
+            "half": self.half,
+            "source": str(self.source),
+            "enable_tracking": self.enable_tracking,
+            "tracker_type": self.tracker_type,
+            "target_classes": self.target_classes,
+            "mode": self.mode,
+            "screenshot_dir": self.screenshot_dir,
+            "web_host": self.web_host,
+            "web_port": self.web_port
+        }
+
