@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Video, Play, VideoOff, RefreshCw } from 'lucide-react';
+import { API_BASE_URL } from '../services/api';
 
 export default function ServerFeedView({ config }) {
   const [sourceInput, setSourceInput] = useState('0');
@@ -63,7 +64,7 @@ export default function ServerFeedView({ config }) {
       <div className="video-stage-wrapper">
         {isStreaming ? (
           <img
-            src={`http://localhost:8000/api/video_feed?source=${encodeURIComponent(activeSource)}`}
+            src={`${API_BASE_URL}/api/video_feed?source=${encodeURIComponent(activeSource)}`}
             alt="MJPEG Server Video Stream"
             className="video-element"
             onError={() => {

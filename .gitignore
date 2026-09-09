@@ -1,0 +1,12 @@
+frontend/dist
+frontend/node_modules
+__pycache__/
+*.pyc
+*.pyo
+.env.local
+screenshots/
+*.jpg
+*.jpeg
+*.png
+.DS_Store
+Thumbs.db

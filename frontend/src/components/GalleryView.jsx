@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Images, Download, RefreshCw, Image as ImageIcon } from 'lucide-react';
-import { fetchScreenshots } from '../services/api';
+import { fetchScreenshots, API_BASE_URL } from '../services/api';
 
 export default function GalleryView() {
   const [screenshots, setScreenshots] = useState([]);
@@ -49,7 +49,7 @@ export default function GalleryView() {
       ) : (
         <div className="gallery-grid">
           {screenshots.map((s) => {
-            const imgUrl = `http://localhost:8000${s.url}`;
+            const imgUrl = `${API_BASE_URL}${s.url}`;
             return (
               <div key={s.filename} className="gallery-card">
                 <img

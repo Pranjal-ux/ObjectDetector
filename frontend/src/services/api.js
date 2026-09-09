@@ -1,10 +1,16 @@
 /**
- * api.js
- * Frontend REST & WebSocket service manager connecting React UI to FastAPI server.
+ * api.js - Vizo Frontend API Service Layer
+ * Connects to the deployed HuggingFace Spaces backend in production,
+ * and falls back to localhost:8000 in local development.
  */
 
-const API_BASE_URL = 'http://localhost:8000';
-const WS_BASE_URL = 'ws://localhost:8000';
+// Detect environment: use Vite env vars for production backend URL
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const WS_BASE_URL = (import.meta.env.VITE_API_URL || 'http://localhost:8000')
+  .replace('https://', 'wss://')
+  .replace('http://', 'ws://');
+
+export { API_BASE_URL };
 
 export async function fetchHealth() {
   const res = await fetch(`${API_BASE_URL}/api/health`);
@@ -43,7 +49,6 @@ export async function updateConfig(configData) {
 export async function detectImage(imageFile) {
   const formData = new FormData();
   formData.append('file', imageFile);
-
   const res = await fetch(`${API_BASE_URL}/api/detect`, {
     method: 'POST',
     body: formData
@@ -72,7 +77,7 @@ export function connectDetectionWebSocket(onPayload, onError, onClose) {
   const ws = new WebSocket(`${WS_BASE_URL}/ws/stream`);
 
   ws.onopen = () => {
-    console.log('[WebSocket] Connection established to backend.');
+    console.log('[WebSocket] Connected to Vizo backend.');
   };
 
   ws.onmessage = (event) => {
@@ -80,7 +85,7 @@ export function connectDetectionWebSocket(onPayload, onError, onClose) {
       const data = JSON.parse(event.data);
       if (onPayload) onPayload(data);
     } catch (e) {
-      console.error('[WebSocket] Failed to parse payload:', e);
+      console.error('[WebSocket] Parse error:', e);
     }
   };
 
