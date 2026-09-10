@@ -23,6 +23,7 @@ from fastapi import (
     WebSocketDisconnect,
     HTTPException,
 )
+
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -46,7 +47,14 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+
+        # Add your Vercel frontend URL here after deployment.
+        # Example:
+        # "https://vizo.vercel.app",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -67,8 +75,8 @@ app.mount(
 # ─── Global State ────────────────────────────────────────────────────────────
 
 app_config = AppConfig()
-
 detector: Optional[ObjectDetector] = None
+
 
 SUPPORTED_MODELS = [
     {
@@ -134,6 +142,7 @@ class ConfigUpdateRequest(BaseModel):
 def startup_event():
     try:
         get_detector()
+        print("[INFO] Vizo backend started successfully.")
     except Exception as e:
         print(f"[WARNING] Could not pre-warm model: {e}")
 
@@ -142,6 +151,7 @@ def startup_event():
 
 @app.get("/api/health")
 def health_check():
+
     det = get_detector()
 
     return {
@@ -157,6 +167,7 @@ def health_check():
 
 @app.get("/api/models")
 def list_models():
+
     return {
         "models": SUPPORTED_MODELS,
         "current": app_config.model_path,
@@ -167,6 +178,7 @@ def list_models():
 
 @app.get("/api/classes")
 def list_classes():
+
     det = get_detector()
 
     classes_list = [
@@ -185,11 +197,13 @@ def list_classes():
 
 @app.get("/api/config")
 def get_config():
+
     return app_config.to_dict()
 
 
 @app.post("/api/config")
 def update_config(req: ConfigUpdateRequest):
+
     global detector, app_config
 
     reload_model = False
@@ -245,10 +259,6 @@ def update_config(req: ConfigUpdateRequest):
 # ─── Core Image Processing ──────────────────────────────────────────────────
 
 def process_image_frame(cv_img: np.ndarray) -> Dict[str, Any]:
-    """
-    Core inference pipeline:
-    run YOLO, annotate, return JSON + base64 image.
-    """
 
     det = get_detector()
 
@@ -269,6 +279,7 @@ def process_image_frame(cv_img: np.ndarray) -> Dict[str, Any]:
         infer_kwargs["half"] = True
 
     if det.config.enable_tracking:
+
         infer_kwargs["tracker"] = det.config.tracker_type
         infer_kwargs["persist"] = True
 
@@ -276,7 +287,9 @@ def process_image_frame(cv_img: np.ndarray) -> Dict[str, Any]:
             cv_img,
             **infer_kwargs,
         )
+
     else:
+
         results = det.model(
             cv_img,
             **infer_kwargs,
@@ -414,6 +427,7 @@ def process_image_frame(cv_img: np.ndarray) -> Dict[str, Any]:
 async def detect_image(
     file: UploadFile = File(...)
 ):
+
     try:
 
         contents = await file.read()
@@ -466,8 +480,10 @@ async def websocket_stream(
             if not data:
                 continue
 
+            # Remove data URL prefix:
+            # data:image/jpeg;base64,...
             if "," in data:
-                data = data.split(",")[1]
+                data = data.split(",", 1)[1]
 
             img_bytes = base64.b64decode(data)
 
@@ -483,7 +499,12 @@ async def websocket_stream(
 
             if img is not None:
 
-                result_data = process_image_frame(img)
+                # YOLO inference is CPU-heavy.
+                # Run it outside the async event loop.
+                result_data = await asyncio.to_thread(
+                    process_image_frame,
+                    img,
+                )
 
                 await websocket.send_json(
                     result_data
@@ -499,13 +520,20 @@ async def websocket_stream(
 
     except WebSocketDisconnect:
 
-        print("[INFO] WebSocket client disconnected.")
+        print(
+            "[INFO] WebSocket client disconnected."
+        )
 
     except Exception as e:
 
         print(
             f"[ERROR] WebSocket exception: {e}"
         )
+
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 # ─── Video Feed ─────────────────────────────────────────────────────────────
@@ -514,8 +542,10 @@ async def websocket_stream(
 def video_feed(
     source: str = "0"
 ):
+
     """
     MJPEG stream.
+
     Only works when server has camera access
     (local deployment).
     """
@@ -555,7 +585,7 @@ def video_feed(
 
                 annotated_base64 = (
                     res["annotated_image"]
-                    .split(",")[1]
+                    .split(",", 1)[1]
                 )
 
                 jpg_bytes = base64.b64decode(
@@ -587,6 +617,7 @@ def video_feed(
 # ─── Screenshot ─────────────────────────────────────────────────────────────
 
 class ScreenshotSaveRequest(BaseModel):
+
     image_base64: str
 
 
@@ -600,7 +631,7 @@ def capture_screenshot(
         data = req.image_base64
 
         if "," in data:
-            data = data.split(",")[1]
+            data = data.split(",", 1)[1]
 
         img_bytes = base64.b64decode(data)
 
@@ -680,7 +711,7 @@ def get_screenshots():
     }
 
 
-# ─── Local Run ──────────────────────────────────────────────────────────────
+# ─── Local / Render Run ─────────────────────────────────────────────────────
 
 if __name__ == "__main__":
 
@@ -689,7 +720,7 @@ if __name__ == "__main__":
     port = int(
         os.environ.get(
             "PORT",
-            7860,
+            8000,
         )
     )
 
