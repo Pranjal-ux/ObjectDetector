@@ -4,11 +4,16 @@
  * and falls back to localhost:8000 in local development.
  */
 
-// Detect environment: use Vite env vars for production backend URL
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-const WS_BASE_URL = (import.meta.env.VITE_API_URL || 'http://localhost:8000')
-  .replace('https://', 'wss://')
-  .replace('http://', 'ws://');
+const DEFAULT_PROD_URL = 'https://vizo-backend-igaq.onrender.com';
+const DEFAULT_DEV_URL = 'http://localhost:8000';
+
+const isProduction = import.meta.env.PROD || (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1');
+
+const API_BASE_URL = import.meta.env.VITE_API_URL || (isProduction ? DEFAULT_PROD_URL : DEFAULT_DEV_URL);
+
+const WS_BASE_URL = API_BASE_URL
+  .replace(/^https:\/\//, 'wss://')
+  .replace(/^http:\/\//, 'ws://');
 
 export { API_BASE_URL };
 
