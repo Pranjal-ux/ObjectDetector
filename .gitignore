@@ -13,3 +13,4 @@ frontend/.env
 # Python virtual environment
 venv/
 .venv/
+.vercel
