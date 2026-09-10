@@ -499,14 +499,22 @@ async def websocket_stream(
 
                 # YOLO inference is CPU-heavy.
                 # Run it outside the async event loop.
-                result_data = await asyncio.to_thread(
-                    process_image_frame,
-                    img,
-                )
+                try:
+                    result_data = await asyncio.to_thread(
+                        process_image_frame,
+                        img,
+                    )
 
-                await websocket.send_json(
-                    result_data
-                )
+                    await websocket.send_json(
+                        result_data
+                    )
+                except Exception as proc_err:
+                    print(f"[ERROR] Frame processing error: {proc_err}")
+                    await websocket.send_json(
+                        {
+                            "error": f"Frame processing failed: {str(proc_err)}"
+                        }
+                    )
 
             else:
 

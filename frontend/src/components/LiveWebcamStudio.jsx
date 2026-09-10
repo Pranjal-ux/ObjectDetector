@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
-  Camera,
   Play,
   VideoOff,
   Camera as SnapIcon,
@@ -8,6 +7,7 @@ import {
   Box,
   Sparkles,
   CheckCircle2,
+  AlertCircle,
 } from "lucide-react";
 
 import { connectDetectionWebSocket, captureScreenshot } from "../services/api";
@@ -25,11 +25,14 @@ export default function LiveWebcamStudio({ config }) {
   });
   const [detections, setDetections] = useState([]);
   const [notification, setNotification] = useState("");
+  const [errorMessage, setErrorMessage] = useState("");
 
   const wsRef = useRef(null);
   const frameIntervalRef = useRef(null);
   const streamRef = useRef(null);
   const isSendingFrameRef = useRef(false);
+  const lastFrameSentTimeRef = useRef(0);
+  const isStreamingRef = useRef(false);
 
   // ─────────────────────────────────────────────
   // START CAMERA
@@ -37,13 +40,14 @@ export default function LiveWebcamStudio({ config }) {
 
   const startWebcam = async () => {
     try {
-      console.log("[Camera] Requesting camera...");
+      console.log("[Camera] Requesting camera stream...");
+      setErrorMessage("");
 
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
-          width: { ideal: 640 },
-          height: { ideal: 480 },
-          frameRate: { ideal: 15 },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          frameRate: { ideal: 30 },
         },
         audio: false,
       });
@@ -51,14 +55,13 @@ export default function LiveWebcamStudio({ config }) {
       streamRef.current = stream;
 
       const video = videoRef.current;
-
       if (!video) {
-        throw new Error("Video element not available");
+        throw new Error("Video element not initialized in DOM");
       }
 
       video.srcObject = stream;
 
-      // Wait until browser knows video dimensions
+      // Wait until browser loaded video metadata & dimensions
       await new Promise((resolve) => {
         if (video.readyState >= 2 && video.videoWidth > 0) {
           resolve();
@@ -72,88 +75,111 @@ export default function LiveWebcamStudio({ config }) {
 
       await video.play();
 
-      console.log(`[Camera] Started: ${video.videoWidth}x${video.videoHeight}`);
+      console.log(`[Camera] Active resolution: ${video.videoWidth}x${video.videoHeight}`);
 
       setIsStreaming(true);
+      isStreamingRef.current = true;
 
-      // ─────────────────────────────────────────
-      // CONNECT WEBSOCKET
-      // ─────────────────────────────────────────
-
-      const ws = connectDetectionWebSocket(
-        (payload) => {
-          console.log("[WebSocket] Detection result received");
-
-          if (payload.error) {
-            console.error("[Backend]", payload.error);
-            return;
-          }
-
-          if (payload.fps !== undefined) {
-            setStreamStats({
-              fps: payload.fps,
-              latency_ms: payload.latency_ms,
-              count: payload.count,
-            });
-
-            setDetections(payload.detections || []);
-
-            renderBoundingBoxes(
-              payload.detections || [],
-              payload.width,
-              payload.height,
-            );
-          }
-
-          // Backend finished processing this frame.
-          isSendingFrameRef.current = false;
-        },
-
-        (err) => {
-          console.error("[WebSocket] Error:", err);
-          isSendingFrameRef.current = false;
-        },
-
-        () => {
-          console.log("[WebSocket] Connection closed.");
-          isSendingFrameRef.current = false;
-        },
-      );
-
-      wsRef.current = ws;
-
-      // ─────────────────────────────────────────
-      // WAIT FOR WEBSOCKET
-      // ─────────────────────────────────────────
-
-      const waitForWebSocket = () => {
-        if (!wsRef.current) {
-          return;
-        }
-
-        if (wsRef.current.readyState === WebSocket.OPEN) {
-          console.log("[WebSocket] Ready. Starting frame transmission.");
-
-          startFrameLoop();
-          return;
-        }
-
-        if (wsRef.current.readyState === WebSocket.CLOSED) {
-          console.error("[WebSocket] Failed to connect.");
-          return;
-        }
-
-        setTimeout(waitForWebSocket, 100);
-      };
-
-      waitForWebSocket();
+      // Connect to WebSocket backend stream
+      initWebSocket();
     } catch (err) {
       console.error("[Camera] Failed to open webcam:", err);
-
-      alert("Could not access webcam. Please check browser permissions.");
-
+      setErrorMessage("Could not access webcam. Please check browser camera permissions.");
       setIsStreaming(false);
+      isStreamingRef.current = false;
     }
+  };
+
+  // ─────────────────────────────────────────────
+  // CONNECT WEBSOCKET
+  // ─────────────────────────────────────────────
+
+  const initWebSocket = () => {
+    if (!isStreamingRef.current) return;
+
+    if (wsRef.current) {
+      try {
+        wsRef.current.close();
+      } catch (e) {
+        // ignore
+      }
+    }
+
+    console.log("[WebSocket] Connecting to backend server...");
+
+    const ws = connectDetectionWebSocket(
+      (payload) => {
+        // Always reset sending flag when response is received
+        isSendingFrameRef.current = false;
+
+        if (!isStreamingRef.current) return;
+
+        if (payload.error) {
+          console.error("[Backend Error]", payload.error);
+          return;
+        }
+
+        if (payload.fps !== undefined) {
+          setStreamStats({
+            fps: payload.fps,
+            latency_ms: payload.latency_ms,
+            count: payload.count,
+          });
+
+          setDetections(payload.detections || []);
+
+          renderBoundingBoxes(
+            payload.detections || [],
+            payload.width,
+            payload.height
+          );
+        }
+      },
+
+      (err) => {
+        console.error("[WebSocket] Transport error:", err);
+        isSendingFrameRef.current = false;
+      },
+
+      () => {
+        console.log("[WebSocket] Connection closed.");
+        isSendingFrameRef.current = false;
+
+        // Auto-reconnect if streaming is still active
+        if (isStreamingRef.current) {
+          console.log("[WebSocket] Attempting reconnection in 1.5s...");
+          setTimeout(() => {
+            if (isStreamingRef.current) {
+              initWebSocket();
+            }
+          }, 1500);
+        }
+      }
+    );
+
+    wsRef.current = ws;
+
+    // Poll until WebSocket transitions to OPEN state
+    const waitForWebSocket = () => {
+      if (!isStreamingRef.current || !wsRef.current) {
+        return;
+      }
+
+      if (wsRef.current.readyState === WebSocket.OPEN) {
+        console.log("[WebSocket] Connection OPEN. Starting frame transmission loop.");
+        startFrameLoop();
+        return;
+      }
+
+      if (wsRef.current.readyState === WebSocket.CLOSED) {
+        console.error("[WebSocket] Connection failed to open.");
+        return;
+      }
+
+      setTimeout(waitForWebSocket, 100);
+    };
+
+    waitForWebSocket();
   };
 
   // ─────────────────────────────────────────────
@@ -165,11 +191,11 @@ export default function LiveWebcamStudio({ config }) {
       clearInterval(frameIntervalRef.current);
     }
 
-    console.log("[Camera] Starting frame transmission...");
+    console.log("[Camera] Starting frame transmission interval (120ms)...");
 
     frameIntervalRef.current = setInterval(() => {
       sendFrame();
-    }, 150);
+    }, 120);
   };
 
   // ─────────────────────────────────────────────
@@ -177,36 +203,53 @@ export default function LiveWebcamStudio({ config }) {
   // ─────────────────────────────────────────────
 
   const sendFrame = () => {
+    if (!isStreamingRef.current) return;
+
     const video = videoRef.current;
     const canvas = hiddenCanvasRef.current;
     const ws = wsRef.current;
 
-    if (!video || !canvas || !ws) {
-      return;
-    }
+    if (!video || !canvas || !ws) return;
 
-    if (ws.readyState !== WebSocket.OPEN) {
-      return;
-    }
+    if (ws.readyState !== WebSocket.OPEN) return;
 
-    if (video.videoWidth === 0 || video.videoHeight === 0) {
-      console.log("[Camera] Video dimensions not ready");
-      return;
-    }
+    if (video.videoWidth === 0 || video.videoHeight === 0) return;
 
-    // Don't send another frame until backend finishes
-    // processing the previous one.
+    // Safety timeout: If pending frame hasn't received response in > 2000ms, unlock
     if (isSendingFrameRef.current) {
-      return;
+      if (Date.now() - lastFrameSentTimeRef.current > 2000) {
+        console.warn("[Camera] Frame response timed out. Unlocking transmission.");
+        isSendingFrameRef.current = false;
+      } else {
+        return;
+      }
     }
 
     isSendingFrameRef.current = true;
+    lastFrameSentTimeRef.current = Date.now();
 
-    canvas.width = 640;
-    canvas.height = 480;
+    // Preserve true aspect ratio when resizing frame for model inference
+    const videoW = video.videoWidth;
+    const videoH = video.videoHeight;
+    const maxDim = 640;
+
+    let sendW = videoW;
+    let sendH = videoH;
+
+    if (videoW > maxDim || videoH > maxDim) {
+      if (videoW >= videoH) {
+        sendW = maxDim;
+        sendH = Math.round(maxDim * (videoH / videoW));
+      } else {
+        sendH = maxDim;
+        sendW = Math.round(maxDim * (videoW / videoH));
+      }
+    }
+
+    canvas.width = sendW;
+    canvas.height = sendH;
 
     const ctx = canvas.getContext("2d");
-
     if (!ctx) {
       isSendingFrameRef.current = false;
       return;
@@ -216,13 +259,10 @@ export default function LiveWebcamStudio({ config }) {
 
     const base64Data = canvas.toDataURL("image/jpeg", 0.65);
 
-    console.log("[Camera] Sending frame...");
-
     try {
       ws.send(base64Data);
     } catch (error) {
       console.error("[WebSocket] Failed to send frame:", error);
-
       isSendingFrameRef.current = false;
     }
   };
@@ -232,7 +272,10 @@ export default function LiveWebcamStudio({ config }) {
   // ─────────────────────────────────────────────
 
   const stopWebcam = () => {
-    console.log("[Camera] Stopping webcam...");
+    console.log("[Camera] Stopping webcam stream...");
+
+    isStreamingRef.current = false;
+    setIsStreaming(false);
 
     if (frameIntervalRef.current) {
       clearInterval(frameIntervalRef.current);
@@ -247,15 +290,11 @@ export default function LiveWebcamStudio({ config }) {
       } catch (error) {
         console.error("[WebSocket] Close error:", error);
       }
-
       wsRef.current = null;
     }
 
     if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => {
-        track.stop();
-      });
-
+      streamRef.current.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
     }
 
@@ -264,9 +303,7 @@ export default function LiveWebcamStudio({ config }) {
       videoRef.current.srcObject = null;
     }
 
-    setIsStreaming(false);
     setDetections([]);
-
     setStreamStats({
       fps: 0,
       latency_ms: 0,
@@ -282,134 +319,164 @@ export default function LiveWebcamStudio({ config }) {
 
   const clearOverlay = () => {
     const canvas = overlayCanvasRef.current;
-
-    if (!canvas) {
-      return;
-    }
+    if (!canvas) return;
 
     const ctx = canvas.getContext("2d");
-
     if (ctx) {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
     }
   };
 
   // ─────────────────────────────────────────────
-  // DRAW BOUNDING BOXES
+  // DRAW BOUNDING BOXES (LETTERBOX-AWARE)
   // ─────────────────────────────────────────────
 
   const renderBoundingBoxes = (items, origW, origH) => {
     const canvas = overlayCanvasRef.current;
     const video = videoRef.current;
 
-    if (!canvas || !video) {
-      return;
-    }
+    if (!canvas || !video) return;
 
     const displayWidth = video.clientWidth;
     const displayHeight = video.clientHeight;
 
-    if (displayWidth === 0 || displayHeight === 0) {
-      return;
-    }
+    if (displayWidth === 0 || displayHeight === 0) return;
 
     canvas.width = displayWidth;
     canvas.height = displayHeight;
 
     const ctx = canvas.getContext("2d");
-
-    if (!ctx) {
-      return;
-    }
+    if (!ctx) return;
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    const scaleX = canvas.width / (origW || video.videoWidth || 1);
+    // Calculate actual letterboxing / pillarboxing offset inside <video> container
+    const sourceW = origW || video.videoWidth || 640;
+    const sourceH = origH || video.videoHeight || 480;
 
-    const scaleY = canvas.height / (origH || video.videoHeight || 1);
+    const videoAspect = sourceW / sourceH;
+    const containerAspect = displayWidth / displayHeight;
+
+    let renderW, renderH, offsetX, offsetY;
+
+    if (containerAspect > videoAspect) {
+      renderH = displayHeight;
+      renderW = displayHeight * videoAspect;
+      offsetX = (displayWidth - renderW) / 2;
+      offsetY = 0;
+    } else {
+      renderW = displayWidth;
+      renderH = displayWidth / videoAspect;
+      offsetX = 0;
+      offsetY = (displayHeight - renderH) / 2;
+    }
+
+    const scaleX = renderW / sourceW;
+    const scaleY = renderH / sourceH;
 
     items.forEach((item) => {
       const [x1, y1, x2, y2] = item.box;
 
-      const sx1 = x1 * scaleX;
-      const sy1 = y1 * scaleY;
-
+      const sx1 = offsetX + x1 * scaleX;
+      const sy1 = offsetY + y1 * scaleY;
       const sw = (x2 - x1) * scaleX;
       const sh = (y2 - y1) * scaleY;
 
-      const strokeColor = "#ffffff";
-      const fillColor = "rgba(255, 255, 255, 0.12)";
+      // Color selection (use backend color if provided or default bright white)
+      let strokeColor = "#ffffff";
+      let fillColor = "rgba(255, 255, 255, 0.12)";
 
-      // Bounding box
+      if (item.color && Array.isArray(item.color) && item.color.length === 3) {
+        const [r, g, b] = item.color;
+        strokeColor = `rgb(${r}, ${g}, ${b})`;
+        fillColor = `rgba(${r}, ${g}, ${b}, 0.18)`;
+      }
+
+      // Draw bounding box
       ctx.lineWidth = 2.5;
       ctx.strokeStyle = strokeColor;
       ctx.fillStyle = fillColor;
 
       ctx.beginPath();
-      ctx.roundRect(sx1, sy1, sw, sh, 6);
+      if (typeof ctx.roundRect === "function") {
+        ctx.roundRect(sx1, sy1, sw, sh, 6);
+      } else {
+        ctx.rect(sx1, sy1, sw, sh);
+      }
 
       ctx.fill();
       ctx.stroke();
 
-      // Label
+      // Format label text
       const labelText =
         item.track_id !== null && item.track_id !== undefined
           ? `#${item.track_id} ${item.class_name} ${(item.confidence * 100).toFixed(0)}%`
           : `${item.class_name} ${(item.confidence * 100).toFixed(0)}%`;
 
       ctx.font = "600 13px Outfit, sans-serif";
-
       const textMetrics = ctx.measureText(labelText);
-
       const textW = textMetrics.width;
       const textH = 20;
 
-      const labelY = Math.max(sy1 - textH - 4, 0);
+      const labelY = Math.max(sy1 - textH - 4, offsetY);
 
-      // Label background
-      ctx.fillStyle = "#ffffff";
-
+      // Label background pill
+      ctx.fillStyle = strokeColor;
       ctx.beginPath();
-
-      ctx.roundRect(sx1, labelY, textW + 12, textH, 4);
-
+      if (typeof ctx.roundRect === "function") {
+        ctx.roundRect(sx1, labelY, textW + 14, textH, 4);
+      } else {
+        ctx.rect(sx1, labelY, textW + 14, textH);
+      }
       ctx.fill();
 
-      // Label text
+      // Label text (black for contrast on bright pill)
       ctx.fillStyle = "#000000";
-
-      ctx.fillText(labelText, sx1 + 6, labelY + 14);
+      ctx.fillText(labelText, sx1 + 7, labelY + 14);
     });
   };
 
   // ─────────────────────────────────────────────
-  // SNAPSHOT
+  // SNAPSHOT (COMPOSITE VIDEO + ANNOTATIONS)
   // ─────────────────────────────────────────────
 
   const handleTakeSnapshot = async () => {
-    if (!hiddenCanvasRef.current || !isStreaming) {
-      return;
-    }
+    const video = videoRef.current;
+    if (!video || !isStreaming) return;
 
     try {
-      const canvas = hiddenCanvasRef.current;
+      const snapCanvas = document.createElement("canvas");
+      const w = video.videoWidth || 640;
+      const h = video.videoHeight || 480;
 
-      const base64Data = canvas.toDataURL("image/jpeg", 0.9);
+      snapCanvas.width = w;
+      snapCanvas.height = h;
 
+      const sCtx = snapCanvas.getContext("2d");
+      if (!sCtx) return;
+
+      // Draw original camera video frame
+      sCtx.drawImage(video, 0, 0, w, h);
+
+      // Draw bounding box overlays on top
+      if (overlayCanvasRef.current) {
+        sCtx.drawImage(overlayCanvasRef.current, 0, 0, w, h);
+      }
+
+      const base64Data = snapCanvas.toDataURL("image/jpeg", 0.9);
       const res = await captureScreenshot(base64Data);
 
       setNotification(`Snapshot saved as ${res.filename}`);
-
       setTimeout(() => {
         setNotification("");
       }, 4000);
     } catch (e) {
-      console.error("Failed to take screenshot:", e);
+      console.error("Failed to capture screenshot:", e);
     }
   };
 
   // ─────────────────────────────────────────────
-  // CLEANUP
+  // CLEANUP ON UNMOUNT
   // ─────────────────────────────────────────────
 
   useEffect(() => {
@@ -419,38 +486,24 @@ export default function LiveWebcamStudio({ config }) {
   }, []);
 
   // ─────────────────────────────────────────────
-  // UI
+  // UI RENDER
   // ─────────────────────────────────────────────
 
   return (
     <div className="studio-card">
       <div className="studio-card-header">
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "12px",
-          }}
-        >
+        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
           <div className="studio-card-title">
             <Sparkles size={20} />
             <span>Live Camera Studio</span>
           </div>
 
-          <span
-            className={`camera-status-pill ${isStreaming ? "active" : "off"}`}
-          >
+          <span className={`camera-status-pill ${isStreaming ? "active" : "off"}`}>
             {isStreaming ? "• Camera Active" : "• Camera Off"}
           </span>
         </div>
 
-        <div
-          style={{
-            display: "flex",
-            gap: "10px",
-            flexWrap: "wrap",
-          }}
-        >
+        <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
           {!isStreaming ? (
             <button className="btn btn-primary" onClick={startWebcam}>
               <Play size={16} />
@@ -458,10 +511,7 @@ export default function LiveWebcamStudio({ config }) {
             </button>
           ) : (
             <>
-              <button
-                className="btn btn-secondary"
-                onClick={handleTakeSnapshot}
-              >
+              <button className="btn btn-secondary" onClick={handleTakeSnapshot}>
                 <SnapIcon size={16} />
                 <span>Take Snapshot</span>
               </button>
@@ -474,6 +524,25 @@ export default function LiveWebcamStudio({ config }) {
           )}
         </div>
       </div>
+
+      {errorMessage && (
+        <div
+          style={{
+            background: "rgba(239, 68, 68, 0.1)",
+            border: "1px solid rgba(239, 68, 68, 0.3)",
+            color: "var(--accent-red)",
+            padding: "10px 14px",
+            borderRadius: "8px",
+            fontSize: "0.88rem",
+            display: "flex",
+            alignItems: "center",
+            gap: "8px",
+          }}
+        >
+          <AlertCircle size={16} />
+          <span>{errorMessage}</span>
+        </div>
+      )}
 
       {notification && (
         <div
@@ -489,23 +558,19 @@ export default function LiveWebcamStudio({ config }) {
           }}
         >
           <CheckCircle2 size={16} color="var(--accent-green)" />
-
           <span>{notification}</span>
         </div>
       )}
 
       <div className="video-stage-wrapper">
         <video ref={videoRef} className="video-element" playsInline muted />
-
         <canvas ref={overlayCanvasRef} className="canvas-overlay" />
-
         <canvas ref={hiddenCanvasRef} style={{ display: "none" }} />
 
         {isStreaming && (
           <div className="hud-top-bar">
             <div className="hud-badge">
               <Activity size={14} />
-
               <span>
                 FPS: <span className="fps-text">{streamStats.fps}</span>
               </span>
@@ -513,7 +578,6 @@ export default function LiveWebcamStudio({ config }) {
 
             <div className="hud-badge">
               <Box size={14} />
-
               <span>
                 Objects: <strong>{streamStats.count}</strong>
               </span>
@@ -550,11 +614,7 @@ export default function LiveWebcamStudio({ config }) {
               Camera is Turned Off
             </div>
 
-            <p
-              style={{
-                fontSize: "0.85rem",
-              }}
-            >
+            <p style={{ fontSize: "0.85rem" }}>
               Click "Turn On Camera" to start live object detection
             </p>
 
@@ -588,7 +648,6 @@ export default function LiveWebcamStudio({ config }) {
               <div key={i} className="detection-card">
                 <div className="detection-card-header">
                   <span>{d.class_name}</span>
-
                   <span className="detection-conf">
                     {(d.confidence * 100).toFixed(0)}%
                   </span>
